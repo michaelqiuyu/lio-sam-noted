@@ -1,0 +1,43 @@
+1. 编译运行
+	1.1 mkdir -p catkin_ws/src && cd catkin_ws
+	1.2 catkin_make -j8
+	1.3 roslaunch lio-sam run.launch
+	1.4 rosbag play ***.bag -r 3
+
+
+
+
+
+
+
+
+
+
+待解决的问题：
+	1. 因子图与贝叶斯网络的区别
+	2. 帧间位姿的计算方法有两种，一种是投影到世界系然后匹配然后计算；另一种是直接在lidar帧上计算匹配（LOAM）；具体使用的是哪一种：使用的是第一种方式，因为世界系只有一个，只需要投影一次，如果使用第二种的话，在计算第i帧的时候，需要将所有的点云投影到第i-1帧，在计算i+1帧的时候，又需要将所有的点云投影到第i帧，因此需要不停的投影，这是非常耗时的
+
+
+
+
+
+iSAM2：Incremental Smoothing and Mapping Using the Bayes Tree
+
+
+
+
+
+使用EKF松耦合Lidar、IMU和GPS：
+	1. A Robust and Modular Multi-sensor Fusion Approach Applied to MAV Navigation
+	2. A Robust Pose Graph Approach for City Scale LiDAR Mapping
+	3. Robust Localization with Low-Mouonted Multiple LiDARs in Urban Environments
+	4. INS/GPS/LiDAR Integrated Navigation System for Urban and Indoor Environments using Hybird Scan Matching Algorithm
+	5. 3D LiDAR SLAM integration with GPS/INS for UAVs in urban GPS-degraded environments
+
+
+GPS的使用方法：
+	A Generalized Extended Kalman Filter Implementation for The Robot Operating System
+
+3D点云描述子：
+	1. Scan Context: Egocentric Spatial Descriptor for Place Recognition within 3D Point Cloud Map
+	2. Local Descriptor for Robust Place Recognition using Lidar Intensity
