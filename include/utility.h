@@ -204,7 +204,9 @@ public:
         nh.param<vector<double>>("lio_sam/extrinsicRot", extRotV, vector<double>());
         nh.param<vector<double>>("lio_sam/extrinsicRPY", extRPYV, vector<double>());
         nh.param<vector<double>>("lio_sam/extrinsicTrans", extTransV, vector<double>());
+        // notes: 这里的yaml的注释可能有误解，这个参数实际上是IMU2Lidar的变换，这个可以从imuConverter中得到
         extRot = Eigen::Map<const Eigen::Matrix<double, -1, -1, Eigen::RowMajor>>(extRotV.data(), 3, 3);
+        // notes: 这里的extRPY并不是将IMU旋转到Lidar含义，而是作者的IMU与通常的不太一样，这里的外参是为了变换到另一个imu下，这个imu与lidar的外参是extRot
         extRPY = Eigen::Map<const Eigen::Matrix<double, -1, -1, Eigen::RowMajor>>(extRPYV.data(), 3, 3);
         extTrans = Eigen::Map<const Eigen::Matrix<double, -1, -1, Eigen::RowMajor>>(extTransV.data(), 3, 1);
         extQRPY = Eigen::Quaterniond(extRPY);
@@ -244,6 +246,7 @@ public:
         usleep(100);
     }
 
+    // 将IMU的加速度计和陀螺仪的读数变换到Lidar坐标系下面，将磁力计的读数变换到extRot多对应的IMU坐标系下
     sensor_msgs::Imu imuConverter(const sensor_msgs::Imu& imu_in)
     {
         sensor_msgs::Imu imu_out = imu_in;
@@ -261,14 +264,14 @@ public:
         imu_out.angular_velocity.y = gyr.y();
         imu_out.angular_velocity.z = gyr.z();
         // rotate roll pitch yaw
-        // 这是一个九轴imu，因此还会有姿态信息
+        // 这是一个九轴imu，因此还会有姿态信息：这里实际上将imu的磁力计的读数变换到extRot所对应的IMU坐标系下面
         Eigen::Quaterniond q_from(imu_in.orientation.w, imu_in.orientation.x, imu_in.orientation.y, imu_in.orientation.z);
         Eigen::Quaterniond q_final = q_from * extQRPY;
         imu_out.orientation.x = q_final.x();
         imu_out.orientation.y = q_final.y();
         imu_out.orientation.z = q_final.z();
         imu_out.orientation.w = q_final.w();
-        // 简单校验一下结果
+        // 简单校验一下结果：理论上其模长应该为1，所以这里的判断可以更加严格一些
         if (sqrt(q_final.x()*q_final.x() + q_final.y()*q_final.y() + q_final.z()*q_final.z() + q_final.w()*q_final.w()) < 0.1)
         {
             ROS_ERROR("Invalid quaternion, please use a 9-axis IMU!");
@@ -280,6 +283,7 @@ public:
 };
 
 
+// 发布指定的点云数据
 sensor_msgs::PointCloud2 publishCloud(ros::Publisher *thisPub, pcl::PointCloud<PointType>::Ptr thisCloud, ros::Time thisStamp, std::string thisFrame)
 {
     sensor_msgs::PointCloud2 tempCloud;
@@ -291,13 +295,14 @@ sensor_msgs::PointCloud2 publishCloud(ros::Publisher *thisPub, pcl::PointCloud<P
     return tempCloud;
 }
 
+// 获取msg的时间
 template<typename T>
 double ROS_TIME(T msg)
 {
     return msg->header.stamp.toSec();
 }
 
-
+// 转换陀螺仪的读数
 template<typename T>
 void imuAngular2rosAngular(sensor_msgs::Imu *thisImuMsg, T *angular_x, T *angular_y, T *angular_z)
 {
@@ -306,7 +311,7 @@ void imuAngular2rosAngular(sensor_msgs::Imu *thisImuMsg, T *angular_x, T *angula
     *angular_z = thisImuMsg->angular_velocity.z;
 }
 
-
+// 转换加速度计的读数
 template<typename T>
 void imuAccel2rosAccel(sensor_msgs::Imu *thisImuMsg, T *acc_x, T *acc_y, T *acc_z)
 {
@@ -315,13 +320,14 @@ void imuAccel2rosAccel(sensor_msgs::Imu *thisImuMsg, T *acc_x, T *acc_y, T *acc_
     *acc_z = thisImuMsg->linear_acceleration.z;
 }
 
-
+// 将磁力计的四元数的位姿转换为欧拉角
 template<typename T>
 void imuRPY2rosRPY(sensor_msgs::Imu *thisImuMsg, T *rosRoll, T *rosPitch, T *rosYaw)
 {
     double imuRoll, imuPitch, imuYaw;
     tf::Quaternion orientation;
     tf::quaternionMsgToTF(thisImuMsg->orientation, orientation);
+    // 将四元数转换为欧拉角
     tf::Matrix3x3(orientation).getRPY(imuRoll, imuPitch, imuYaw);
 
     *rosRoll = imuRoll;
@@ -329,13 +335,13 @@ void imuRPY2rosRPY(sensor_msgs::Imu *thisImuMsg, T *rosRoll, T *rosPitch, T *ros
     *rosYaw = imuYaw;
 }
 
-
+// 计算模长
 float pointDistance(PointType p)
 {
     return sqrt(p.x*p.x + p.y*p.y + p.z*p.z);
 }
 
-
+// 计算两点的距离
 float pointDistance(PointType p1, PointType p2)
 {
     return sqrt((p1.x-p2.x)*(p1.x-p2.x) + (p1.y-p2.y)*(p1.y-p2.y) + (p1.z-p2.z)*(p1.z-p2.z));

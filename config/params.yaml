@@ -38,20 +38,23 @@ lio_sam:
   imuGravity: 9.80511
   imuRPYWeight: 0.01
 
-  # Extrinsics (lidar -> IMU)
+
+  # Extrinsics (lidar -> IMU)：在代码中，旋转为单位阵，平移从此处读取，为零向量，数据应该是提前做了矫正
   extrinsicTrans: [0.0, 0.0, 0.0]
-  # extrinsicRot: [-1, 0, 0,
-  #                 0, 1, 0,
-  #                 0, 0, -1]
-  # extrinsicRPY: [0,  1, 0,
-  #                -1, 0, 0,
-  #                 0, 0, 1]
-  extrinsicRot: [1, 0, 0,
-                  0, 1, 0,
-                  0, 0, 1]
-  extrinsicRPY: [1, 0, 0,
-                  0, 1, 0,
-                  0, 0, 1]
+
+  # 这里的两个外参实际上并不是lidar与IMU之间的外参关系，第一个用于将加速度计和陀螺仪读数矫正到某个IMU坐标系下；第二个用于将磁力计读数矫正到同一个IMU坐标系下
+   extrinsicRot: [-1, 0, 0,
+                   0, 1, 0,
+                   0, 0, -1]
+   extrinsicRPY: [0,  1, 0,
+                  -1, 0, 0,
+                   0, 0, 1]
+#  extrinsicRot: [1, 0, 0,
+#                  0, 1, 0,
+#                  0, 0, 1]
+#  extrinsicRPY: [1, 0, 0,
+#                  0, 1, 0,
+#                  0, 0, 1]
 
   # LOAM feature threshold
   edgeThreshold: 1.0
