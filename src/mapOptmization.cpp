@@ -165,8 +165,11 @@ public:
         pubLaserOdometryIncremental = nh.advertise<nav_msgs::Odometry> ("lio_sam/mapping/odometry_incremental", 1);
         pubPath                     = nh.advertise<nav_msgs::Path>("lio_sam/mapping/path", 1);
 
+        // 订阅featureExtraction.cpp发布的提取的线点和面点
         subCloud = nh.subscribe<lio_sam::cloud_info>("lio_sam/feature/cloud_info", 1, &mapOptimization::laserCloudInfoHandler, this, ros::TransportHints().tcpNoDelay());
+        // 订阅GPS消息
         subGPS   = nh.subscribe<nav_msgs::Odometry> (gpsTopic, 200, &mapOptimization::gpsHandler, this, ros::TransportHints().tcpNoDelay());
+        // 订阅外部先验的回环消息：这里读取的是时间戳信息，也就是两个时间戳对应的帧是一个回环
         subLoop  = nh.subscribe<std_msgs::Float64MultiArray>("lio_loop/loop_closure_detection", 1, &mapOptimization::loopInfoHandler, this, ros::TransportHints().tcpNoDelay());
         // 订阅一个保存地图功能的服务
         srvSaveMap  = nh.advertiseService("lio_sam/save_map", &mapOptimization::saveMapService, this);
@@ -231,6 +234,7 @@ public:
         matP = cv::Mat(6, 6, CV_32F, cv::Scalar::all(0));
     }
 
+    // 订阅提取的线点和面点
     void laserCloudInfoHandler(const lio_sam::cloud_infoConstPtr& msgIn)
     {
         // extract time stamp
@@ -247,7 +251,7 @@ public:
         std::lock_guard<std::mutex> lock(mtx);
 
         static double timeLastProcessing = -1;
-        // 控制后端频率，两帧处理一帧
+        // 控制后端频率，两帧处理一帧：每隔mappingProcessInterval处理一帧
         if (timeLaserInfoCur - timeLastProcessing >= mappingProcessInterval)
         {
             timeLastProcessing = timeLaserInfoCur;
@@ -261,7 +265,7 @@ public:
             scan2MapOptimization();
             // 根据配准结果确定是否是关键帧
             saveKeyFramesAndFactor();
-            // 调整全局轨迹
+            // 调整全局轨迹：将上面优化的结果更新到对应的关键帧上面
             correctPoses();
             // 将lidar里程记信息发送出去
             publishOdometry();
@@ -338,20 +342,6 @@ public:
         thisPose6D.yaw   = transformIn[2];
         return thisPose6D;
     }
-
-    
-
-
-
-
-
-
-
-
-
-
-
-
 
     bool saveMapService(lio_sam::save_mapRequest& req, lio_sam::save_mapResponse& res)
     {
@@ -505,16 +495,6 @@ public:
         publishCloud(&pubLaserCloudSurround, globalMapKeyFramesDS, timeLaserInfoStamp, odometryFrame);
     }
 
-
-
-
-
-
-
-
-
-
-
     // 回环检测线程
     void loopClosureThread()
     {
@@ -562,9 +542,9 @@ public:
         int loopKeyCur;
         int loopKeyPre;
         // 首先看一下外部通知的回环信息
-        if (detectLoopClosureExternal(&loopKeyCur, &loopKeyPre) == false)
+        if (detectLoopClosureExternal(&loopKeyCur, &loopKeyPre) == false)  // 这个回环信息从外部读取
             // 然后根据里程记的距离来检测回环
-            if (detectLoopClosureDistance(&loopKeyCur, &loopKeyPre) == false)
+            if (detectLoopClosureDistance(&loopKeyCur, &loopKeyPre) == false)  // 查找当前关键帧的回环关键帧：空间上接近，时间上远离
                 return;
         // 检出回环之后开始计算两帧位姿变换
         // extract cloud
@@ -572,10 +552,10 @@ public:
         pcl::PointCloud<PointType>::Ptr prevKeyframeCloud(new pcl::PointCloud<PointType>());
         {
             // 稍晚的帧就把自己取了出来
-            loopFindNearKeyframes(cureKeyframeCloud, loopKeyCur, 0);
+            loopFindNearKeyframes(cureKeyframeCloud, loopKeyCur, 0);  // 仅仅去除一帧的线点和面点
             // 稍早一点的就把自己和周围一些点云取出来，也就是构成一个帧到局部地图的一个匹配问题
-            loopFindNearKeyframes(prevKeyframeCloud, loopKeyPre, historyKeyframeSearchNum);
-            // 如果点云数目太少就算了
+            loopFindNearKeyframes(prevKeyframeCloud, loopKeyPre, historyKeyframeSearchNum);  // 取出回环关键帧前后historyKeyframeSearchNum的关键帧的所有的线点和面点
+            // 如果点云数目太少就算了：不足以计算相对变换
             if (cureKeyframeCloud->size() < 300 || prevKeyframeCloud->size() < 1000)
                 return;
             if (pubHistoryKeyFrames.getNumSubscribers() != 0)
@@ -583,13 +563,15 @@ public:
                 publishCloud(&pubHistoryKeyFrames, prevKeyframeCloud, timeLaserInfoStamp, odometryFrame);
         }
 
+        // 这里没有设置初值，当然了，如果两个关键帧能够构成回环，说明他们的位姿是十分接近的，也就是从单位阵开始本身就是一个比较好的初值
+
         // ICP Settings
         // 使用简单的icp来进行帧到局部地图的配准
         static pcl::IterativeClosestPoint<PointType, PointType> icp;
-        icp.setMaxCorrespondenceDistance(historyKeyframeSearchRadius*2);
-        icp.setMaximumIterations(100);
-        icp.setTransformationEpsilon(1e-6);
-        icp.setEuclideanFitnessEpsilon(1e-6);
+        icp.setMaxCorrespondenceDistance(historyKeyframeSearchRadius*2);  // 寻找对应关系的时候的阈值
+        icp.setMaximumIterations(100);  // 最大迭代步数
+        icp.setTransformationEpsilon(1e-6);  // 前一个变换和当前变换之间的差异，如果小于这个阈值，就认为收敛
+        icp.setEuclideanFitnessEpsilon(1e-6);  // 对应点之间欧式距离的平均值的阈值，如果小于这个阈值，就认为收敛
         icp.setRANSACIterations(0);
 
         // Align clouds
@@ -600,7 +582,7 @@ public:
         // 执行点云配准
         icp.align(*unused_result);
         // 检查icp是否收敛且得分是否满足要求
-        if (icp.hasConverged() == false || icp.getFitnessScore() > historyKeyframeFitnessScore)
+        if (icp.hasConverged() == false || icp.getFitnessScore() > historyKeyframeFitnessScore)  // 对应点之间的欧式距离的平均值
             return;
 
         // publish corrected cloud
@@ -660,6 +642,10 @@ public:
         if (it != loopIndexContainer.end())
             return false;
 
+        /**
+         * 空间上接近，时间上远离，才是回环
+         */
+
         // find the closest history key frame
         std::vector<int> pointSearchIndLoop;
         std::vector<float> pointSearchSqDisLoop;
@@ -689,6 +675,7 @@ public:
         return true;
     }
 
+    // 检验外部传入的先验回环信息：时间间隔、地图中关键帧的数量是否不足2、是否对应着同一个关键帧
     bool detectLoopClosureExternal(int *latestID, int *closestID)
     {
         // this function is not used yet, please ignore it
@@ -703,6 +690,8 @@ public:
         // 取出回环信息，这里是把时间戳作为回环信息
         double loopTimeCur = loopInfoVec.front().data[0];
         double loopTimePre = loopInfoVec.front().data[1];
+        // 这里直接将这个回环信息pop了，也就是说先验信息的计算的时候，这个时间戳对应着有回环，但是本工程运行的时候可能不一定此时有2个关键帧，因此没有回环，这个回环信息后面也不会在进一步校验了
+        // 当然这种情况几乎不会发生，因为前面几帧本就没有什么漂移，不会有回环
         loopInfoVec.pop_front();
         // 如果两个回环帧之间的时间差小于30s就算了
         if (abs(loopTimeCur - loopTimePre) < historyKeyframeSearchTimeDiff)
@@ -835,15 +824,6 @@ public:
         pubLoopConstraintEdge.publish(markerArray);
     }
 
-
-
-
-
-
-
-    
-
-
     // 作为基于优化方式的点云匹配，初始值是非常重要的，一个好的初始值会帮助优化问题快速收敛且避免局部最优解的情况
     void updateInitialGuess()
     {
@@ -868,14 +848,16 @@ public:
             return;
         }
 
+        // 在前两帧的时候，里程计的结果还没有准备好，使用的是imu的结果，之后里程计的数据准备好了，就是用里程计的结果了
+
         // use imu pre-integration estimation for pose guess
         static bool lastImuPreTransAvailable = false;
         static Eigen::Affine3f lastImuPreTransformation;
-        // 如果有预积分节点提供的里程记
+        // 如果有预积分节点提供的里程记：从这里可以看出，优先使用的是里程计的结果
         if (cloudInfo.odomAvailable == true)
         {
             // 将提供的初值转成eigen的数据结构保存下来
-            Eigen::Affine3f transBack = pcl::getTransformation(cloudInfo.initialGuessX,    cloudInfo.initialGuessY,     cloudInfo.initialGuessZ, 
+            Eigen::Affine3f transBack = pcl::getTransformation(cloudInfo.initialGuessX,    cloudInfo.initialGuessY,     cloudInfo.initialGuessZ,
                                                                cloudInfo.initialGuessRoll, cloudInfo.initialGuessPitch, cloudInfo.initialGuessYaw);
             // 这个标志位表示是否收到过第一帧预积分里程记信息
             if (lastImuPreTransAvailable == false)
@@ -896,7 +878,7 @@ public:
 
                 // 同理，把当前帧的值保存下来
                 lastImuPreTransformation = transBack;
-                // 虽然有里程记信息，仍然需要把imu磁力计得到的旋转记录下来
+                // 虽然有里程记信息，仍然需要把imu磁力计得到的旋转记录下来：可能是为了后面里程计的结果不可用的时候使用imu的结果
                 lastImuTransformation = pcl::getTransformation(0, 0, 0, cloudInfo.imuRollInit, cloudInfo.imuPitchInit, cloudInfo.imuYawInit); // save imu before return;
                 return;
             }
@@ -935,6 +917,7 @@ public:
         extractCloud(cloudToExtract);
     }
 
+    // 提取空间上或者时间上比较接近的关键帧作为局部地图，空间上接近的关键帧的点云会做下采样
     void extractNearby()
     {
         pcl::PointCloud<PointType>::Ptr surroundingKeyPoses(new pcl::PointCloud<PointType>());
@@ -960,8 +943,10 @@ public:
         for(auto& pt : surroundingKeyPosesDS->points)
         {
             kdtreeSurroundingKeyPoses->nearestKSearch(pt, 1, pointSearchInd, pointSearchSqDis);
-            pt.intensity = cloudKeyPoses3D->points[pointSearchInd[0]].intensity;
+            pt.intensity = cloudKeyPoses3D->points[pointSearchInd[0]].intensity;  // 其实就是其自身，这里实际上是保证下采样后点云的intensity不变
         }
+
+        // notes: 空间上和时间上接近的关键帧可能有重合
 
         // also extract some latest key frames in case the robot rotates in one position
         int numPoses = cloudKeyPoses3D->size();
@@ -986,7 +971,7 @@ public:
         laserCloudSurfFromMap->clear(); 
         for (int i = 0; i < (int)cloudToExtract->size(); ++i)
         {
-            // 简单校验一下关键帧距离不能太远，这个实际上不太会触发
+            // 简单校验一下关键帧距离不能太远，这个实际上不太会触发：这里实际上是在检查时间上接近的关键帧
             if (pointDistance(cloudToExtract->points[i], cloudKeyPoses3D->back()) > surroundingKeyframeSearchRadius)
                 continue;
             // 取出提出出来的关键帧的索引
@@ -994,6 +979,8 @@ public:
             // 如果这个关键帧对应的点云信息已经存储在一个地图容器里
             if (laserCloudMapContainer.find(thisKeyInd) != laserCloudMapContainer.end()) 
             {
+                // notes：这里的操作很奇怪，为什么重复添加尼；考虑到空间上和时间上的关键帧确实有重合，但是为什么要保持这种重合尼
+
                 // transformed cloud available
                 // 直接从容器中取出来加到局部地图中
                 *laserCloudCornerFromMap += laserCloudMapContainer[thisKeyInd].first;
@@ -1009,7 +996,6 @@ public:
                 // 把转换后的面点和角点存进这个容器中，方便后续直接加入点云地图，避免点云转换的操作，节约时间
                 laserCloudMapContainer[thisKeyInd] = make_pair(laserCloudCornerTemp, laserCloudSurfTemp);
             }
-            
         }
 
         // Downsample the surrounding corner key frames (or map)
@@ -1044,6 +1030,7 @@ public:
         extractNearby();
     }
 
+    // 对当前帧的线点和面点进行下采样
     void downsampleCurrentScan()
     {
         // Downsample cloud from current scan
@@ -1067,7 +1054,7 @@ public:
 
     void cornerOptimization()
     {
-        updatePointAssociateToMap();
+        updatePointAssociateToMap();  // 使用transformTobeMapped计算transPointAssociateToMap，用于后面将线点投影到地图
         // 使用openmp并行加速
         #pragma omp parallel for num_threads(numberOfCores)
         // 遍历当前帧的角点
@@ -1082,6 +1069,8 @@ public:
             pointAssociateToMap(&pointOri, &pointSel);
             // 在角点地图里寻找距离当前点比较近的5个点
             kdtreeCornerFromMap->nearestKSearch(pointSel, 5, pointSearchInd, pointSearchSqDis);
+
+            // 判断搜索到的这5个点是否在一条直线周围分布
 
             cv::Mat matA1(3, 3, CV_32F, cv::Scalar::all(0));
             cv::Mat matD1(1, 3, CV_32F, cv::Scalar::all(0));
@@ -1130,10 +1119,12 @@ public:
                     float y2 = cy - 0.1 * matV1.at<float>(0, 1);
                     float z2 = cz - 0.1 * matV1.at<float>(0, 2);
                     // 下面是计算点到线的残差和垂线方向（及雅克比方向）
+                    // 三角形面积 * 2
                     float a012 = sqrt(((x0 - x1)*(y0 - y2) - (x0 - x2)*(y0 - y1)) * ((x0 - x1)*(y0 - y2) - (x0 - x2)*(y0 - y1)) 
                                     + ((x0 - x1)*(z0 - z2) - (x0 - x2)*(z0 - z1)) * ((x0 - x1)*(z0 - z2) - (x0 - x2)*(z0 - z1)) 
                                     + ((y0 - y1)*(z0 - z2) - (y0 - y2)*(z0 - z1)) * ((y0 - y1)*(z0 - z2) - (y0 - y2)*(z0 - z1)));
 
+                    // 底边长度
                     float l12 = sqrt((x1 - x2)*(x1 - x2) + (y1 - y2)*(y1 - y2) + (z1 - z2)*(z1 - z2));
 
                     float la = ((y1 - y2)*((x0 - x1)*(y0 - y2) - (x0 - x2)*(y0 - y1)) 
@@ -1145,6 +1136,7 @@ public:
                     float lc = -((x1 - x2)*((x0 - x1)*(z0 - z2) - (x0 - x2)*(z0 - z1)) 
                                + (y1 - y2)*((y0 - y1)*(z0 - z2) - (y0 - y2)*(z0 - z1))) / a012 / l12;
 
+                    // 垂线长度，从表达式看，一定大于0
                     float ld2 = a012 / l12;
                     // 一个简单的核函数，残差越大权重降低
                     float s = 1 - 0.9 * fabs(ld2);
@@ -1153,7 +1145,8 @@ public:
                     coeff.y = s * lb;
                     coeff.z = s * lc;
                     coeff.intensity = s * ld2;
-                    // 如果残差小于10cm，就认为是一个有效的约束
+                    // 如果残差小于10cm，就认为是一个有效的约束：Error
+                    // 从s的计算表达式来说，这里实际上是|ld2| < 1
                     if (s > 0.1) {
                         laserCloudOriCornerVec[i] = pointOri;
                         coeffSelCornerVec[i] = coeff;
@@ -1166,7 +1159,7 @@ public:
 
     void surfOptimization()
     {
-        updatePointAssociateToMap();
+        updatePointAssociateToMap();  // 使用transformTobeMapped计算transPointAssociateToMap，用于后面将面点投影到地图
 
         #pragma omp parallel for num_threads(numberOfCores)
         for (int i = 0; i < laserCloudSurfLastDSNum; i++)
@@ -1179,6 +1172,9 @@ public:
             pointAssociateToMap(&pointOri, &pointSel); 
             kdtreeSurfFromMap->nearestKSearch(pointSel, 5, pointSearchInd, pointSearchSqDis);
 
+            // 注意在面点提取的时候已经将某个特征点周围的点剔除了，因此一般不会出现这5个点在一条scan上的情况，但其实可以分情况讨论一下， 或者下面点到平面的阈值与提取特征点删除周围点的阈值联动
+
+            // 以下对面点的处理，并不是计算5个最近点构成点集的特征值的大小关系，而是直接拟合平面，并且这里隐含着平面不会过原点，这个假设不太合理
             Eigen::Matrix<float, 5, 3> matA0;
             Eigen::Matrix<float, 5, 1> matB0;
             Eigen::Vector3f matX0;
@@ -1220,6 +1216,12 @@ public:
                     // 计算当前点到平面的距离
                     float pd2 = pa * pointSel.x + pb * pointSel.y + pc * pointSel.z + pd;
                     // 分母不是很明白，为了更多的面点用起来？
+                    /**
+                     * 此处核函数的合理性是什么？
+                     * 对于相同的pd2，如果某个点云更远，那么它的权重s更大，为什么这样设计
+                     * 而且，一般点云的距离都较远（大于1），因此这里计算的s应该都接近1，而且与线点比较，其s更大，也就是给与面点更大的权重，这同样不合理
+                     * 一般情况下，面点的数量会显著多于线点
+                     */
                     float s = 1 - 0.9 * fabs(pd2) / sqrt(sqrt(pointSel.x * pointSel.x
                             + pointSel.y * pointSel.y + pointSel.z * pointSel.z));
 
@@ -1228,7 +1230,7 @@ public:
                     coeff.z = s * pc;
                     coeff.intensity = s * pd2;
 
-                    if (s > 0.1) {
+                    if (s > 0.1) {  // 要求pd2 < sqrt(sqrt(pointSel.x * pointSel.x + pointSel.y * pointSel.y + pointSel.z * pointSel.z)
                         laserCloudOriSurfVec[i] = pointOri;
                         coeffSelSurfVec[i] = coeff;
                         laserCloudOriSurfFlag[i] = true;
@@ -1296,6 +1298,16 @@ public:
 
         PointType pointOri, coeff;
 
+        /**
+         * 对于旋转使用的是欧拉角，参考网址为：https://en.wikipedia.org/wiki/Euler_angles
+         * 使用的是YXZ的顺序的欧拉角，直接对相应的角度进行求解即可
+         *
+         * 残差e（一维）对旋转和平移的求导使用链式求导，先求e对世界点pw的导数，然后在求解pw对旋转和平移的导数
+         * e对pw的导数：对于线点来说就是点到点到直线方向的单位向量；对于面点来说就是点到平面方向的单位向量
+         *
+         * pw = Rp + t，再求解pw对旋转和平移的导数即可
+         */
+
         for (int i = 0; i < laserCloudSelNum; i++) {
             // 首先将当前点以及点到线（面）的单位向量转到相机系
             // lidar -> camera
@@ -1337,6 +1349,15 @@ public:
         matAtB = matAt * matB;
         // 求解增量
         cv::solve(matAtA, matAtB, matX, cv::DECOMP_QR);
+
+        /**
+         * 通常情况下（以概率1发生），A.t * A是实对称正定阵，但是A的具体形式可能导致求解的稳定性
+         * 详细的讨论我已经记录在lio-sam的论文了
+         */
+
+        // xc's todo: 有可能是bug的对于退化的判断，仅仅只是在iterCount==0的时候计算，如果第一次没有收敛，那么下一次迭代的时候，并没有重新计算matP，而matX却依然使用了第一次计算的，这难道不是错误吗
+        // xc's todo: 每次优化之前都会计算线点和面点的近点，然后计算点到直线和点到平面的距离以及垂线的方向，但是随着transformTobeMapped的变化，每次获取的近点就会变化，也就是说A是变化的，那么A.t * A自然也是变化的
+        // xc's todo: 那么自然A.t * A的稳定性也是变化的，可是代码逻辑却是只要第一次退化后面就一直是退化的，而且matP也没有更新
 
         if (iterCount == 0) {
             // 检查一下是否有退化的情况
@@ -1411,12 +1432,13 @@ public:
                 laserCloudOri->clear();
                 coeffSel->clear();
 
+                // 以下三个函数都是在做数据准备，并没有开始优化，直到LMOptimization才开始构建优化问题：每次优化之前都会做
                 cornerOptimization();
                 surfOptimization();
 
                 combineOptimizationCoeffs();
 
-                if (LMOptimization(iterCount) == true)
+                if (LMOptimization(iterCount) == true)  // 当为true的时候，认为优化收敛了
                     break;              
             }
             // 优化问题结束
@@ -1508,7 +1530,7 @@ public:
         // 如果是地一帧关键帧
         if (cloudKeyPoses3D->points.empty())
         {
-            // 置信度就设置差一点，尤其是不可观的平移和yaw角
+            // 置信度就设置差一点，尤其是不可观的平移和yaw角: pitch和roll可以通过IMU计算得到
             noiseModel::Diagonal::shared_ptr priorNoise = noiseModel::Diagonal::Variances((Vector(6) << 1e-2, 1e-2, M_PI*M_PI, 1e8, 1e8, 1e8).finished()); // rad*rad, meter*meter
             // 增加先验约束，对第0个节点增加约束
             gtSAMgraph.add(PriorFactor<Pose3>(0, trans2gtsamPose(transformTobeMapped), priorNoise));
@@ -1522,8 +1544,15 @@ public:
             gtsam::Pose3 poseFrom = pclPointTogtsamPose3(cloudKeyPoses6D->points.back());
             gtsam::Pose3 poseTo   = trans2gtsamPose(transformTobeMapped);
             // 这是一个帧间约束，分别输入两个节点的id，帧间约束大小以及置信度
+            /**
+             * 关键帧的生成判断就是当前帧相对于最新的关键帧的相对位姿的变化，也就是如果当前帧是关键帧的话，那么最新的关键帧也就发生了变化，也就是当前帧
+             * 由此可知，当前帧相对于最新的关键帧之间的相对位姿首先就不大，齐次，这个相对位姿与前两个关键帧之间的相对位姿也应该是比较接近的，但是具体有多么接近取决于关键帧的生成条件
+             * 例如已经有两个关键帧kf1和kf2，并且关键帧生成的判断条件的阈值为th，现在kf2后面紧跟的一帧（注意不是关键帧，就是普通帧）与kf2当然极为接近，因此当前帧与kf2的相对位姿与kf1与kf2的相对位姿并不会多么接近
+             * 所以这里的噪声模型的值设定是最好是变化的，这个变化应该取决于当前帧与kf2的相对变化△，也就是△很小的时候（对应着kf2紧跟着的几帧），这个约束的置信度应该偏低；反之则是当前帧有可能被认为是关键帧的时候，这个时候约束的置信度可以稍大
+             * 当然，这里的讨论都是十分主观的，置信度实际上都不应该过分大，不过此代码给与的置信度还是非常大的
+             */
             gtSAMgraph.add(BetweenFactor<Pose3>(cloudKeyPoses3D->size()-1, cloudKeyPoses3D->size(), poseFrom.between(poseTo), odometryNoise));
-            // 加入节点信息
+            // 加入节点信息：约束当前帧的位姿与上一关键帧的位姿的相对位姿与前两个关键帧的相对位姿接近
             initialEstimate.insert(cloudKeyPoses3D->size(), poseTo);
         }
     }
@@ -1552,6 +1581,11 @@ public:
 
         // last gps position
         static PointType lastGPSPoint;
+
+        /**
+         * 这里传入的GPS数据不是经纬高，而是已经对齐到世界系的欧式坐标，但是每次运行的世界系不一定相同，因此最好是动态对齐的，并且这个对齐也最好是动态计算的
+         * 随着传入的数据不停地优化对齐会是一种更好的效果
+         */
 
         while (!gpsQueue.empty())
         {
@@ -1611,7 +1645,7 @@ public:
                 // gps的置信度，标准差设置成最小1m，也就是不会特别信任gps信号
                 Vector3 << max(noise_x, 1.0f), max(noise_y, 1.0f), max(noise_z, 1.0f);
                 noiseModel::Diagonal::shared_ptr gps_noise = noiseModel::Diagonal::Variances(Vector3);
-                // 调用gtsam中集成的gps的约束
+                // 调用gtsam中集成的gps的约束：这里使用的是绝对的位置进行约束，由于GPS数据本身也会有误差，因此对于两个传感器的数据直接进行绝对坐标的约束不一定好，建议参考VINS-FUSION的做法
                 gtsam::GPSFactor gps_factor(cloudKeyPoses3D->size(), gtsam::Point3(gps_x, gps_y, gps_z), gps_noise);
                 gtSAMgraph.add(gps_factor);
                 // 加入gps之后等同于回环，需要触发较多的isam update
@@ -1635,7 +1669,9 @@ public:
             gtsam::Pose3 poseBetween = loopPoseQueue[i];
             // 回环的置信度就是icp的得分
             gtsam::noiseModel::Diagonal::shared_ptr noiseBetween = loopNoiseQueue[i];
-            // 加入约束
+            // 一定要注意的是：这里优化的不一定是当前关键帧，而是根据loopIndexQueue中记录的回环信息
+            // 加入约束：有点类似本质图优化，这里加入了回环的约束，这个约束与里程计的约束差别较大，发生回环的关键帧位姿会由于回环而发生较大变动，又由于里程计约束使得与发生回环的关键帧的前一关键帧位姿发生变动，进而传递尺度漂移产生的误差
+            // 这里不同于视觉中的本质图优化的是，这里的约束都是顺序连接的，不像ORB-SLAM3中使用共视图能够构建众多的非连续关键帧的约束
             gtSAMgraph.add(BetweenFactor<Pose3>(indexFrom, indexTo, poseBetween, noiseBetween));
         }
         // 清空回环相关队列
@@ -1646,6 +1682,7 @@ public:
         aLoopIsClosed = true;
     }
 
+    // 判断当前帧是否是关键帧，如果是关键帧的话，就添加里程计、GPS和回环的约束，然后对整个因子图（注意是整个）进行优化，更新当前关键帧的位姿；至于其他关键帧的位姿会在后面更新
     void saveKeyFramesAndFactor()
     {
         // 通过旋转和平移的增量来判断是否是关键帧
@@ -1713,7 +1750,7 @@ public:
         // cout << "****************************************************" << endl;
         // cout << "Pose covariance:" << endl;
         // cout << isam->marginalCovariance(isamCurrentEstimate.size()-1) << endl << endl;
-        // 保存当前位姿的置信度
+        // 保存当前位姿的置信度：用于后面判断是否添加GPS约束
         poseCovariance = isam->marginalCovariance(isamCurrentEstimate.size()-1);
 
         // save updated transform

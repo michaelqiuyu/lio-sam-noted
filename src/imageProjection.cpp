@@ -87,14 +87,18 @@ private:
 
 public:
     ImageProjection():
-    deskewFlag(0)
+    deskewFlag(0)  // 初始化列表
     {
         // 订阅imu数据，后端里程记数据，原始点云数据
         subImu        = nh.subscribe<sensor_msgs::Imu>(imuTopic, 2000, &ImageProjection::imuHandler, this, ros::TransportHints().tcpNoDelay());
+        // 订阅imuPreintegration.cpp发布的imu对应的Lidar的状态，需要注意的是，这个imu不一定对应有Lidar
         subOdom       = nh.subscribe<nav_msgs::Odometry>(odomTopic+"_incremental", 2000, &ImageProjection::odometryHandler, this, ros::TransportHints().tcpNoDelay());
+        // 订阅原始的点云数据
         subLaserCloud = nh.subscribe<sensor_msgs::PointCloud2>(pointCloudTopic, 5, &ImageProjection::cloudHandler, this, ros::TransportHints().tcpNoDelay());
 
+        // 发布，由rviz接收
         pubExtractedCloud = nh.advertise<sensor_msgs::PointCloud2> ("lio_sam/deskew/cloud_deskewed", 1);
+        // 发布，由fratureExtraction.cpp接收
         pubLaserCloudInfo = nh.advertise<lio_sam::cloud_info> ("lio_sam/deskew/cloud_info", 1);
 
         allocateMemory();
@@ -245,6 +249,8 @@ public:
             ros::shutdown();
         }
 
+        // noted: fields中保存的就是上面记录的x、y、z、intensity、ring和time
+
         // check ring channel
         // 查看驱动里是否把每个点属于哪一根扫描scan这个信息
         static int ringFlag = 0;
@@ -266,6 +272,15 @@ public:
                 ros::shutdown();
             }
         }
+#if 0
+        std::cout << "ringFlag = " << ringFlag << std::endl;
+        std::cout << "deskewFlag = " << deskewFlag << std::endl;
+
+        std::cout << "currentCloudMsg.fields.size = " << currentCloudMsg.fields.size() << std::endl;
+        for (auto &field : currentCloudMsg.fields)
+            std::cout << "field.name = " << field.name << std::endl;
+        std::cout << std::endl;
+#endif
 
         // check point time
         // 同样，检查是否有时间戳信息
@@ -283,11 +298,14 @@ public:
             if (deskewFlag == -1)
                 ROS_WARN("Point cloud timestamp not available, deskew function disabled, system will drift significantly!");
         }
+#if 0
+        std::cout << "deskewFlag = " << deskewFlag << std::endl;
+#endif
 
         return true;
     }
 
-    // 获取运动补偿所需的信息
+    // 获取运动补偿所需的信息：记录IMU信息和Lidar起始到结束的相对位姿
     bool deskewInfo()
     {
         std::lock_guard<std::mutex> lock1(imuLock);
@@ -308,9 +326,30 @@ public:
         return true;
     }
 
+    // 获取Lidar一帧的起始到结束的IMU数据，数据保存形式为这个时间区间内的IMU对应的旋转角度
     void imuDeskewInfo()
     {
         cloudInfo.imuAvailable = false;
+#if 0
+        int num = 0;
+        double start_time = -1;
+        std::deque<sensor_msgs::Imu> imus = imuQueue;
+        std::cout << "imu.size = " << imus.size() << std::endl;
+//        for (int i = 0; i < (int)imuQueue.size(); ++i)
+//            std::cout << "imuQueue[i].header.stamp.toSec() = " << imuQueue[i].header.stamp.toSec() << std::endl;
+        while (!imus.empty()) {
+            num++;
+            if (start_time + 1 < 0.000001)
+                start_time = imus.front().header.stamp.toSec();
+//            std::cout << "start_time = " << start_time << std::endl;
+//            std::cout << "imus.front().header.stamp.toSec() = " << imus.front().header.stamp.toSec() << std::endl;
+            if (imus.front().header.stamp.toSec() >= start_time + 0.99999)
+                break;
+            else
+                imus.pop_front();;
+        }
+        std::cout << "num = " << num << std::endl;
+#endif
 
         while (!imuQueue.empty())
         {
@@ -331,6 +370,16 @@ public:
             double currentImuTime = thisImuMsg.header.stamp.toSec();
 
             // get roll, pitch, and yaw estimation for this scan
+            // 在上面pop了timeScanCur-0.01前面的imu数据，在这里又要求其小于等于timeScanCur，这里实际上要求IMU频率非常高，否则不会进入下面的判断中
+            // 在官方提供的数据测试中，我们发现有很多数据都进入了这个测试，其频率在300帧以上
+#if 0
+            if (currentImuTime <= timeScanCur) {
+                std::cout << std::fixed << std::endl;
+                std::cout << "currentImuTime = " << currentImuTime << std::endl;
+                std::cout << "timeScanCur = " << timeScanCur << std::endl;
+            }
+#endif
+            // notes：以下转换的欧拉角在mapOptmization中有使用，因此如果自己的imu频率在100帧以下的话，那么这里的判断将没有意义，在mapOptmization中也将出现问题
             if (currentImuTime <= timeScanCur)
                 // 把imu的姿态转成欧拉角
                 imuRPY2rosRPY(&thisImuMsg, &cloudInfo.imuRollInit, &cloudInfo.imuPitchInit, &cloudInfo.imuYawInit);
@@ -370,6 +419,7 @@ public:
         cloudInfo.imuAvailable = true;
     }
 
+    // 获取Lidar一帧的起始到结束的里程计数据，注意这里的里程计是IMU频率下的Lidar数据（imu不一定对应有Lidar数据），计算Lidar一帧的首尾的相对位姿
     void odomDeskewInfo()
     {
         cloudInfo.odomAvailable = false;
@@ -437,7 +487,14 @@ public:
             else
                 break;
         }
+#if 0
+        std::cout << "startOdomMsg.pose.covariance[0] = " << startOdomMsg.pose.covariance[0] << std::endl;
+        std::cout << "endOdomMsg.pose.covariance[0] = " << endOdomMsg.pose.covariance[0] << std::endl;
+#endif
         // 这个代表odom退化了，就置信度不高了
+        // xc's todo: 这里判断是无效的，因为仅仅只有imageProjection.cpp订阅了odomTopic+"_incremental"，并且并没有地方给covariance赋值过了
+        // 在mapOptmization.cpp中的mapping/odometry_incremental倒是有对covariance进行赋值
+        // xc's todo: 这里应该是作者的一个小bug，不过并不影响代码的运行
         if (int(round(startOdomMsg.pose.covariance[0])) != int(round(endOdomMsg.pose.covariance[0])))
             return;
         // 起始位姿和结束位姿都转成Affine3f这个数据结构
@@ -508,6 +565,7 @@ public:
 
     PointType deskewPoint(PointType *point, double relTime)
     {
+        // deskewFlag == -1表示没有时间戳信息
         if (deskewFlag == -1 || cloudInfo.imuAvailable == false)
             return *point;
         // relTime是相对时间，加上起始时间就是绝对时间
@@ -564,7 +622,7 @@ public:
             // scan id必须合理
             if (rowIdn < 0 || rowIdn >= N_SCAN)
                 continue;
-            // 如果需要降采样，就根据scan id适当跳过
+            // 如果需要降采样，就根据scan id适当跳过：这里是按照scan进行降采样，这样会损失非常多的信息，建议按照水平方向降采样
             if (rowIdn % downsampleRate != 0)
                 continue;
             // 计算水平角
@@ -578,6 +636,13 @@ public:
             // 对水平id进行检查
             if (columnIdn < 0 || columnIdn >= Horizon_SCAN)
                 continue;
+
+            /**
+             * 在前左上的坐标系下：
+             *      horizonAngle取值为：-pi → -0.5pi → 0 → 0.5pi → pi
+             *      columnIdn的取值为： 0.5pi → 0 → 1.5pi → pi → 0.5pi
+             */
+
             // 如果这个位置已经有填充了就跳过
             if (rangeMat.at<float>(rowIdn, columnIdn) != FLT_MAX)
                 continue;
@@ -643,6 +708,7 @@ int main(int argc, char** argv)
     
     ROS_INFO("\033[1;32m----> Image Projection Started.\033[0m");
 
+    // 这里的3表示IP中订阅了3个topic
     ros::MultiThreadedSpinner spinner(3);
     spinner.spin();
     

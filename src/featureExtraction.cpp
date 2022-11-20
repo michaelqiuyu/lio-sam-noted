@@ -39,10 +39,14 @@ public:
 
     FeatureExtraction()
     {
+        // 订阅imageProjection.cpp发布的去畸变的点云数据
         subLaserCloudInfo = nh.subscribe<lio_sam::cloud_info>("lio_sam/deskew/cloud_info", 1, &FeatureExtraction::laserCloudInfoHandler, this, ros::TransportHints().tcpNoDelay());
 
+        // 发布角点和面点
         pubLaserCloudInfo = nh.advertise<lio_sam::cloud_info> ("lio_sam/feature/cloud_info", 1);
+        // 发布角点
         pubCornerPoints = nh.advertise<sensor_msgs::PointCloud2>("lio_sam/feature/cloud_corner", 1);
+        // 发布面点
         pubSurfacePoints = nh.advertise<sensor_msgs::PointCloud2>("lio_sam/feature/cloud_surface", 1);
         
         initializationValue();
@@ -85,6 +89,9 @@ public:
         for (int i = 5; i < cloudSize - 5; i++)
         {
             // 计算当前点和周围十个点的距离差
+            /**
+             * 这里的计算与LOAM中不同，这里使用的是距离来计算曲率；而在LOAM中使用的是三个维度分别计算
+             */
             float diffRange = cloudInfo.pointRange[i-5] + cloudInfo.pointRange[i-4]
                             + cloudInfo.pointRange[i-3] + cloudInfo.pointRange[i-2]
                             + cloudInfo.pointRange[i-1] - cloudInfo.pointRange[i] * 10
@@ -114,19 +121,24 @@ public:
             float depth1 = cloudInfo.pointRange[i];
             float depth2 = cloudInfo.pointRange[i+1];
             // 计算两个有效点之间的列id差
+            // 正常情况下，相邻两个点的列相差1，但是由于这两个点之间有无效点，使得他们的列值大于1
             int columnDiff = std::abs(int(cloudInfo.pointColInd[i+1] - cloudInfo.pointColInd[i]));
-            // 只有比较靠近才有意义
+#if 0
+            std::cout << "columnDiff = " << columnDiff << std::endl;
+#endif
+            // 只有比较靠近才有意义：否则两个点之间不会有遮挡的问题
             if (columnDiff < 10){
+                // notes: 相邻点近，远点容易被遮挡
                 // 10 pixel diff in range image
                 // 这样depth1容易被遮挡，因此其之前的5个点走设置为无效点
-                if (depth1 - depth2 > 0.3){
+                if (depth1 - depth2 > 0.3) {
                     cloudNeighborPicked[i - 5] = 1;
                     cloudNeighborPicked[i - 4] = 1;
                     cloudNeighborPicked[i - 3] = 1;
                     cloudNeighborPicked[i - 2] = 1;
                     cloudNeighborPicked[i - 1] = 1;
                     cloudNeighborPicked[i] = 1;
-                }else if (depth2 - depth1 > 0.3){   // 这里同理
+                }else if (depth2 - depth1 > 0.3) {   // 这里同理
                     cloudNeighborPicked[i + 1] = 1;
                     cloudNeighborPicked[i + 2] = 1;
                     cloudNeighborPicked[i + 3] = 1;
@@ -159,6 +171,10 @@ public:
             for (int j = 0; j < 6; j++)
             {
                 // 根据之前得到的每个scan的起始和结束id来均分
+                /**
+                 * sp: start + i / 6 / (end - start) = [(6 - i) * start + i * end] / 6
+                 * ep: start + (i + 1) / 6 / (end - start) = [(5 - i) * start + (i + 1) * end] / 6
+                 */
                 int sp = (cloudInfo.startRingIndex[i] * (6 - j) + cloudInfo.endRingIndex[i] * j) / 6;
                 int ep = (cloudInfo.startRingIndex[i] * (5 - j) + cloudInfo.endRingIndex[i] * (j + 1)) / 6 - 1;
                 // 这种情况就不正常
@@ -268,10 +284,10 @@ public:
         freeCloudInfoMemory();
         // save newly extracted features
         // 把角点和面点发送给后端
-        cloudInfo.cloud_corner  = publishCloud(&pubCornerPoints,  cornerCloud,  cloudHeader.stamp, lidarFrame);
-        cloudInfo.cloud_surface = publishCloud(&pubSurfacePoints, surfaceCloud, cloudHeader.stamp, lidarFrame);
+        cloudInfo.cloud_corner  = publishCloud(&pubCornerPoints,  cornerCloud,  cloudHeader.stamp, lidarFrame);  // 发布角点
+        cloudInfo.cloud_surface = publishCloud(&pubSurfacePoints, surfaceCloud, cloudHeader.stamp, lidarFrame);  // 发布面点
         // publish to mapOptimization
-        pubLaserCloudInfo.publish(cloudInfo);
+        pubLaserCloudInfo.publish(cloudInfo);  // 发布角点+面点
     }
 };
 

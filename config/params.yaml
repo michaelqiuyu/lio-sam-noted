@@ -17,7 +17,7 @@ lio_sam:
   useGpsElevation: false                      # if GPS elevation is bad, set to "false"
   gpsCovThreshold: 2.0                        # m^2, threshold for using GPS data
   poseCovThreshold: 25.0                      # m^2, threshold for using GPS data
-  
+
   # Export settings
   savePCD: false                              # https://github.com/TixiaoShan/LIO-SAM/issues/3
   savePCDDirectory: "/Downloads/LOAM/"        # in your home folder, starts and ends with "/". Warning: the code deletes "LOAM" folder then recreates it. See "mapOptimization" for implementation
@@ -43,18 +43,18 @@ lio_sam:
   extrinsicTrans: [0.0, 0.0, 0.0]
 
   # 这里的两个外参实际上并不是lidar与IMU之间的外参关系，第一个用于将加速度计和陀螺仪读数矫正到某个IMU坐标系下；第二个用于将磁力计读数矫正到同一个IMU坐标系下
-   extrinsicRot: [-1, 0, 0,
-                   0, 1, 0,
-                   0, 0, -1]
-   extrinsicRPY: [0,  1, 0,
-                  -1, 0, 0,
-                   0, 0, 1]
-#  extrinsicRot: [1, 0, 0,
-#                  0, 1, 0,
-#                  0, 0, 1]
-#  extrinsicRPY: [1, 0, 0,
-#                  0, 1, 0,
-#                  0, 0, 1]
+#  extrinsicRot: [-1, 0, 0,
+#                 0, 1, 0,
+#                 0, 0, -1]
+#  extrinsicRPY: [0,  1, 0,
+#                 -1, 0, 0,
+#                 0, 0, 1]
+  extrinsicRot: [1, 0, 0,
+                  0, 1, 0,
+                  0, 0, 1]
+  extrinsicRPY: [1, 0, 0,
+                    0, 1, 0,
+                    0, 0, 1]
 
   # LOAM feature threshold
   edgeThreshold: 1.0
@@ -78,7 +78,7 @@ lio_sam:
   # Surrounding map
   surroundingkeyframeAddingDistThreshold: 1.0   # meters, regulate keyframe adding threshold
   surroundingkeyframeAddingAngleThreshold: 0.2  # radians, regulate keyframe adding threshold
-  surroundingKeyframeDensity: 2.0               # meters, downsample surrounding keyframe poses   
+  surroundingKeyframeDensity: 2.0               # meters, downsample surrounding keyframe poses
   surroundingKeyframeSearchRadius: 50.0         # meters, within n meters scan-to-map optimization (when loop closure disabled)
 
   # Loop closure
@@ -132,7 +132,7 @@ ekf_gps:
                 false, false, true,
                 true,  true,  true]
   imu0_differential: false
-  imu0_queue_size: 50 
+  imu0_queue_size: 50
   imu0_remove_gravitational_acceleration: true
   # -------------------------------------
   # Odometry (From Navsat):

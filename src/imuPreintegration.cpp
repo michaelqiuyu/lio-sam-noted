@@ -599,7 +599,16 @@ public:
         odometry.twist.twist.angular.x = thisImu.angular_velocity.x + prevBiasOdom.gyroscope().x();  // 测量值+零偏
         odometry.twist.twist.angular.y = thisImu.angular_velocity.y + prevBiasOdom.gyroscope().y();
         odometry.twist.twist.angular.z = thisImu.angular_velocity.z + prevBiasOdom.gyroscope().z();
+
+#if 1
+        odometry.pose.covariance[0] = 3;
+#endif
+
         pubImuOdometry.publish(odometry);
+
+#if 0
+        std::cout << "x = " << lidarPose.translation().x() << std::endl;
+#endif
     }
 };
 
